@@ -1,0 +1,124 @@
+---
+title: "Random Forest Model"
+format: html
+editor: visual
+---
+
+## Random Forest Model
+
+This document includes a random forest implementation on the re-balanced training data. Then, it tests its performance on the original test data.
+
+## Setup
+
+First, clear the environment, set configuration parameters and load the required libraries.
+
+```{r}
+
+# Reset environment
+rm(list=ls())
+
+# Config
+options(java.parameters = "-Xmx4000m")
+
+library(caret)
+library(xlsx)
+```
+
+## Data Loading and Preparation
+
+Load the re-balanced training and original test datasets. Then, prepare them accordingly.
+
+```{r}
+
+# Utility functions
+
+desc_bkrpt_data = function(data, name) {
+  print("--- Bankruptcy Dataset")
+  print(sprintf("Name: %s", name))
+  print("Dimensions: ")
+  dim(data)
+  print(paste0(
+    "Proportion that is bankrupt: ", 
+    sum(data$y == 1)/dim(data)[1]
+  ))
+  print("Outline: ")
+  str(data)
+  print("---")
+}
+
+# Standardises column names assuming the target is first, then the features
+standardise_column_names = function(data) {
+  # Target
+  names(data)[1] = "y"
+  # Features
+  names(data)[-1] = paste0('x', 1:(ncol(data)-1))
+  
+  return(data)
+}
+
+# Converts y target to categorical for the training of a classification model
+prep_class_targ = function(data) {
+  data$y = as.factor(data$y)
+  return(data)
+}
+```
+
+```{r}
+
+# Load the rebalanced training data in
+rebalanced.train.data = read.xlsx("G2TR.xlsx", 1)
+# Load the test data in
+test.data = read.xlsx("test.xlsx", 1)
+```
+
+```{r}
+# Prepare the rebalanced training dataset
+
+# Ensure target is categorical so that it is compatible with classification
+rebalanced.train.data = prep_class_targ(rebalanced.train.data)
+
+# Brief outline of the dataset
+desc_bkrpt_data(rebalanced.train.data, "Rebalanced Train")
+```
+
+```{r}
+# Prepare the test dataset
+
+# Standardise columns to y, x1, x2, ...
+test.data = standardise_column_names(test.data)
+# Convert the target to categorical so that it is compatible with classification applications
+test.data = prep_class_targ(test.data)
+
+# Brief outline of the result
+desc_bkrpt_data(test.data, "Test")
+```
+
+## Model Training
+
+Train a random forest model, with 5 fold cross validation that optimises accuracy.
+
+```{r}
+
+cv5fold <- trainControl(method="cv", number=5) # Create 5 fold cv control
+# Train with the 5 fold CV on a random forest model, optimising accuracy
+fit.rf <- train(
+  y~., data=rebalanced.train.data, method="rf", metric="Accuracy", 
+  trControl=cv5fold
+)
+```
+
+```{r}
+# Performance from the training
+print(fit.rf)
+```
+
+```{r}
+# Performance on reserved test data
+
+# Make predictons
+test.pred <- predict(fit.rf, newdata=test.data)
+write.csv(test.pred, "predictionsModel.csv")
+# Report performance with metrics and the confusion matrix
+postResample(pred=test.pred, obs=test.data$y)
+confusionMatrix(test.pred, test.data$y)
+```
