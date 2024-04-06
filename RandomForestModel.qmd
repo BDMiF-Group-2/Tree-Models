@@ -1,5 +1,6 @@
 ---
 title: "Random Forest Model"
+author: "Varun Vipul Chodanker"
 format: html
 editor: visual
 ---
@@ -22,11 +23,14 @@ options(java.parameters = "-Xmx4000m")
 
 library(caret)
 library(xlsx)
+library(ranger)
 ```
 
 ## Data Loading and Preparation
 
 Load the re-balanced training and original test datasets. Then, prepare them accordingly.
+
+First define utility functions for data description, column name standardisation and target type preparation.
 
 ```{r}
 
@@ -63,6 +67,8 @@ prep_class_targ = function(data) {
 }
 ```
 
+Load in the rebalanced training dataset and original test dataset.
+
 ```{r}
 
 # Load the rebalanced training data in
@@ -70,6 +76,15 @@ rebalanced.train.data = read.xlsx("G2TR.xlsx", 1)
 # Load the test data in
 test.data = read.xlsx("test.xlsx", 1)
 ```
+
+Load in the new adasyn optimised training dataset.
+
+```{r}
+
+adasyn.train.data = read.xlsx("adasyn_set.xlsx", 1)
+```
+
+Convert the target of the rebalanced training dataset.
 
 ```{r}
 # Prepare the rebalanced training dataset
@@ -80,6 +95,8 @@ rebalanced.train.data = prep_class_targ(rebalanced.train.data)
 # Brief outline of the dataset
 desc_bkrpt_data(rebalanced.train.data, "Rebalanced Train")
 ```
+
+Rename the columns and convert the target of the test dataset.
 
 ```{r}
 # Prepare the test dataset
@@ -93,32 +110,104 @@ test.data = prep_class_targ(test.data)
 desc_bkrpt_data(test.data, "Test")
 ```
 
-## Model Training
+Convert the target of the new adasyn training dataset.
 
-Train a random forest model, with 5 fold cross validation that optimises accuracy.
+```{r}
+
+# Target conversion for classification
+adasyn.train.data = prep_class_targ(adasyn.train.data)
+
+# Describe the result
+desc_bkrpt_data(adasyn.train.data, "Adasyn Training Data")
+```
+
+## Model Training and Evaluation
+
+Train a random forest model on caret. Employ 5 fold cross validation that optimises accuracy. On both the rebalanced and new adasyn training sets.
 
 ```{r}
 
 cv5fold <- trainControl(method="cv", number=5) # Create 5 fold cv control
 # Train with the 5 fold CV on a random forest model, optimising accuracy
-fit.rf <- train(
+rebalanced.fit.rf <- train(
   y~., data=rebalanced.train.data, method="rf", metric="Accuracy", 
+  trControl=cv5fold
+)
+
+adasyn.fit.rf <- train(
+  y~., data=adasyn.train.data, method="rf", metric="Accuracy", 
   trControl=cv5fold
 )
 ```
 
+Report training performance of the two random forest models above.
+
 ```{r}
 # Performance from the training
-print(fit.rf)
+print(rebalanced.fit.rf)
+
+print(adasyn.fit.rf)
 ```
+
+Report the test performance of the two random forest models above.
 
 ```{r}
 # Performance on reserved test data
 
-# Make predictons
-test.pred <- predict(fit.rf, newdata=test.data)
-write.csv(test.pred, "predictionsModel.csv")
-# Report performance with metrics and the confusion matrix
-postResample(pred=test.pred, obs=test.data$y)
-confusionMatrix(test.pred, test.data$y)
+# Expects standardised column names.
+evaluate_model = function(model, eval_data) {
+  # Make predictons
+  eval_pred = NULL
+  
+  # Ensure just the raw predictions are extracted for further processing
+  if (inherits(model, "ranger")) {
+    eval_pred = predict(model, data=eval_data)
+    eval_pred = eval_pred$predictions
+  }
+  else {
+    eval_pred = predict(model, newdata=eval_data)  
+  }
+  # write.csv(eval_pred, "predictionsModel.csv")
+  
+  # Report performance with metrics and the confusion matrix
+  postResample(pred=eval_pred, obs=eval_data$y)
+  confusionMatrix(eval_pred, eval_data$y)  
+}
+
+evaluate_model(rebalanced.fit.rf, test.data)
+evaluate_model(adasyn.fit.rf, test.data)
+
+```
+
+Train and evaluate a ranger model as the alternative
+
+```{r}
+
+#Compute weights to balance the RF
+# w <- 1/table(train.data$y)
+# w <- w/sum(w)
+# weights <- rep(0, nrow(train.data))
+# weights[train.data$y == 0] <- w['0']
+# weights[train.data$y == 1] <- w['1']
+# table(weights, train.data$y)
+
+#Fit the RF
+# train.df <- data.frame(train.data$Bankrupt., train.data[,2:ncol(train.data)])
+# case.weights=weights
+rebalanced.fit.rrf <- ranger(y~., rebalanced.train.data)
+print(rebalanced.fit.rrf)
+evaluate_model(rebalanced.fit.rrf, test.data)
+# test.pred = predict(rebalanced.fit.rrf, data=test.data)
+# postResample(pred=test.pred$predictions, obs=test.data$y)
+# confusionMatrix(test.pred$predictions, test.data$y)
+```
+
+```{r}
+
+adasyn.fit.rrf <- ranger(y~., adasyn.train.data)
+print(adasyn.fit.rrf)
+evaluate_model(adasyn.fit.rrf, test.data)
+# test.pred = predict(adasyn.fit.rrf, data=test.data)
+# postResample(pred=test.pred$predictions, obs=test.data$y)
+# confusionMatrix(test.pred$predictions, test.data$y)
 ```
