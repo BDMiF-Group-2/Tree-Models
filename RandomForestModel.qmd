@@ -24,6 +24,7 @@ options(java.parameters = "-Xmx4000m")
 library(caret)
 library(xlsx)
 library(ranger)
+library(dplyr)
 ```
 
 ## Data Loading and Preparation
@@ -210,4 +211,62 @@ evaluate_model(adasyn.fit.rrf, test.data)
 # test.pred = predict(adasyn.fit.rrf, data=test.data)
 # postResample(pred=test.pred$predictions, obs=test.data$y)
 # confusionMatrix(test.pred$predictions, test.data$y)
+```
+
+Attempt to increase weighting towards the +1 cases in training, on top of the balancing.
+
+```{r}
+
+# Expects standardised column names: y, x1, x2, ...
+filter_features = function(data) {
+  return(
+    data %>%
+      select(y,x39,x45,x49,x50,x52,x56,x59,x63,x64,x65,x70,x74,x75,x80,x83,x84,x85,x89)
+  )
+}
+
+dr.adasyn.train.data <- filter_features(adasyn.train.data)
+
+str(dr.adasyn.train.data)
+```
+
+```{r}
+
+get_case_weights = function(data) {
+  weights <- rep(0, nrow(data))
+  weights[data$y == 0] = 0.03
+  weights[data$y == 1] = 0.97
+  print("Weight Assignment:")
+  table(weights, data$y)
+  
+  return(
+    weights
+  )
+}
+
+get_class_weights = function() {
+  return(c(0, 5000000))
+}
+```
+
+```{r}
+
+adasyn.fit.wrrf <- ranger(
+  y~., adasyn.train.data, 
+  case.weights=get_case_weights(adasyn.train.data), class.weights = get_class_weights()
+)
+print(adasyn.fit.wrrf)
+evaluate_model(adasyn.fit.wrrf, test.data)
+```
+
+```{r}
+
+adasyn.fit.csrf = csrf(y~., adasyn.train.data, test.data)
+print(adasyn.fit.csrf)
+```
+
+```{r}
+
+# worse performance (case-weighted random forests)
+confusionMatrix(adasyn.fit.csrf, test.data$y)
 ```
