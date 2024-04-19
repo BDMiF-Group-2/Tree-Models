@@ -18,13 +18,16 @@ First, clear the environment, set configuration parameters and load the required
 # Reset environment
 rm(list=ls())
 
-# Config
-options(java.parameters = "-Xmx4000m")
-
 library(caret)
-library(xlsx)
+library(readxl)
 library(ranger)
 library(dplyr)
+library(mlr3)
+library(pROC)
+library(doMC)
+
+# Configure the parallel backend to: #cores - 1
+registerDoMC(7)
 ```
 
 ## Data Loading and Preparation
@@ -44,7 +47,7 @@ desc_bkrpt_data = function(data, name) {
   dim(data)
   print(paste0(
     "Proportion that is bankrupt: ", 
-    sum(data$y == 1)/dim(data)[1]
+    sum(data$Bankrupt == "is_bankrupt")/dim(data)[1]
   ))
   print("Outline: ")
   str(data)
@@ -61,96 +64,170 @@ standardise_column_names = function(data) {
   return(data)
 }
 
-# Converts y target to categorical for the training of a classification model
+# Converts Bankrupt target to categorical for the training of a classification model
 prep_class_targ = function(data) {
-  data$y = as.factor(data$y)
+  data$Bankrupt = as.factor(data$Bankrupt)
+  levels(data$Bankrupt) <- c("not_bankrupt", "is_bankrupt")
   return(data)
+}
+
+# Filter to passed in column names...
+filter_features = function(data, colnames) {
+  return(
+    data %>%
+      select(all_of(colnames))
+  )
 }
 ```
 
-Load in the rebalanced training dataset and original test dataset.
+Read wrapper for a dataframe
 
 ```{r}
 
-# Load the rebalanced training data in
-rebalanced.train.data = read.xlsx("G2TR.xlsx", 1)
+read_xlsx_to_df = function(fp) {
+  return(
+    data.frame(read_excel(fp))
+  )
+}
+```
+
+Load all the variants of the training data and the test data in.
+
+```{r}
+
+# Load the training data in
+train.data = read_xlsx_to_df("./Datasets/train.xlsx")
+# Load the balanced training data in
+train_bal.data = read_xlsx_to_df("./Datasets/train_bal.xlsx")
+# Load the feature selected training data in
+train.feat_sel.data = read_xlsx_to_df("./Datasets/train_feat_sel.xlsx")
+# Load the feature selected balanced training data in
+train_bal.feat_sel.data = read_xlsx_to_df("./Datasets/train_bal_feat_sel.xlsx")
+
 # Load the test data in
-test.data = read.xlsx("test.xlsx", 1)
+test.data = read_xlsx_to_df("./Datasets/test.xlsx")
+# Feature selected version of the test data
+test.feat_sel.data = filter_features(test.data, names(train.feat_sel.data))
 ```
 
-Load in the new adasyn optimised training dataset.
+Inspect the loaded data sets here.
 
 ```{r}
 
-adasyn.train.data = read.xlsx("adasyn_set.xlsx", 1)
+str(train.data)
 ```
 
-Convert the target of the rebalanced training dataset.
-
-```{r}
-# Prepare the rebalanced training dataset
-
-# Ensure target is categorical so that it is compatible with classification
-rebalanced.train.data = prep_class_targ(rebalanced.train.data)
-
-# Brief outline of the dataset
-desc_bkrpt_data(rebalanced.train.data, "Rebalanced Train")
-```
-
-Rename the columns and convert the target of the test dataset.
-
-```{r}
-# Prepare the test dataset
-
-# Standardise columns to y, x1, x2, ...
-test.data = standardise_column_names(test.data)
-# Convert the target to categorical so that it is compatible with classification applications
-test.data = prep_class_targ(test.data)
-
-# Brief outline of the result
-desc_bkrpt_data(test.data, "Test")
-```
-
-Convert the target of the new adasyn training dataset.
+Convert the target of the data sets to ensure use for classification.
 
 ```{r}
 
 # Target conversion for classification
-adasyn.train.data = prep_class_targ(adasyn.train.data)
+train.data = prep_class_targ(train.data)
+train_bal.data = prep_class_targ(train_bal.data)
+train.feat_sel.data = prep_class_targ(train.feat_sel.data)
+train_bal.feat_sel.data = prep_class_targ(train_bal.feat_sel.data)
 
-# Describe the result
-desc_bkrpt_data(adasyn.train.data, "Adasyn Training Data")
+test.data = prep_class_targ(test.data)
+test.feat_sel.data = prep_class_targ(test.feat_sel.data)
+```
+
+Confirm the data sets are ready here.
+
+```{r}
+
+desc_bkrpt_data(train.data, "Train")
 ```
 
 ## Model Training and Evaluation
 
-Train a random forest model on caret. Employ 5 fold cross validation that optimises accuracy. On both the rebalanced and new adasyn training sets.
+Create utility function related to the weight/weights of the minority bankrupt class.
 
 ```{r}
 
-cv5fold <- trainControl(method="cv", number=5) # Create 5 fold cv control
-# Train with the 5 fold CV on a random forest model, optimising accuracy
-rebalanced.fit.rf <- train(
-  y~., data=rebalanced.train.data, method="rf", metric="Accuracy", 
-  trControl=cv5fold
-)
+# compared to a weight of 1 for the other non-bankrupt class
+get_bankrupt_weight = function (data) {
+  return (
+    sum(data$Bankrupt == "not_bankrupt") / sum(data$Bankrupt == "is_bankrupt")
+  )
+}
 
-adasyn.fit.rf <- train(
-  y~., data=adasyn.train.data, method="rf", metric="Accuracy", 
-  trControl=cv5fold
-)
+get_sample_bankrupt_weights = function (data) {
+  ws = rep(0, nrow(data))
+  not_bankrupt_weight = 1
+  is_bankrupt_weight = get_bankrupt_weight(data)
+  
+  ws[data$Bankrupt == "not_bankrupt"] = not_bankrupt_weight
+  ws[data$Bankrupt == "is_bankrupt"] = is_bankrupt_weight
+  
+  return(ws)
+}
+
+get_bankrupt_class_weights = function (data) {
+  return (
+    c(1, get_bankrupt_weight(data))
+  )
+}
 ```
 
-Report training performance of the two random forest models above.
+Train a random forest model on caret. Employ 5 fold cross validation that optimises sensitivity.
 
 ```{r}
-# Performance from the training
-print(rebalanced.fit.rf)
 
-print(adasyn.fit.rf)
+# num.trees = c(10, 30, 50), 
+# max.depth = c(5, 10, 15)
+
+# Create 5 fold cv, sensitivity, specificity, ROC control
+cv5foldCtrl <- trainControl(method="cv", number=5, classProbs = TRUE, summaryFunction = twoClassSummary, allowParallel = TRUE) 
+
+get_ranger_grid = function(feat_sel) {
+  if (feat_sel) {
+    return (
+      expand.grid(mtry = c(3, 12, 29, 51),
+           min.node.size=c(1, 3, 5, 7, 9),
+           splitrule=c("gini", "extratrees", "hellinger")
+      )
+    )
+  }
+  else {
+    return (
+      expand.grid(mtry = c(3, 12, 29, 47, 73, 91),
+           min.node.size=c(1, 3, 5, 7, 9),
+           splitrule=c("gini", "extratrees", "hellinger")
+      )
+    )
+  }
+}
+
+fit_ranger = function(data, feat_sel=FALSE) {
+  rangerGrid = get_ranger_grid(feat_sel)
+  
+  return (
+    train(
+      x=data[, names(data) != 'Bankrupt'], 
+      y=data[["Bankrupt"]], method="ranger", 
+      metric="ROC", trControl=cv5foldCtrl, tuneGrid=rangerGrid, 
+      num.trees=50, max.depth=3, regularization.usedepth = TRUE, 
+      weights=get_sample_bankrupt_weights(data), class.weights=get_bankrupt_class_weights(data)
+    )
+  )
+}
+
+# assumes balanced data input
+fit_ranger_on_balanced = function(data, feat_sel=FALSE) {
+  rangerGrid = get_ranger_grid(feat_sel)
+  
+  return (
+    train(
+      x=data[, names(data) != 'Bankrupt'], 
+      y=data[["Bankrupt"]], method="ranger", 
+      metric="ROC", trControl=cv5foldCtrl, tuneGrid=rangerGrid, 
+      num.trees=50, max.depth=3, regularization.usedepth = TRUE
+    )
+  )
+}
 ```
 
-Report the test performance of the two random forest models above.
+Now evaluate the model on the test data with its confusion matrix
 
 ```{r}
 # Performance on reserved test data
@@ -171,26 +248,208 @@ evaluate_model = function(model, eval_data) {
   # write.csv(eval_pred, "predictionsModel.csv")
   
   # Report performance with metrics and the confusion matrix
-  postResample(pred=eval_pred, obs=eval_data$y)
-  confusionMatrix(eval_pred, eval_data$y)  
+  print(postResample(pred=eval_pred, obs=eval_data$Bankrupt))
+  print(confusionMatrix(eval_pred, eval_data$Bankrupt))
+}
+```
+
+Also evaluate it based on its ROC and AUC.
+
+```{r}
+
+evaluate_roc = function(model, eval_data, model_name="Unknown") {
+  eval_pred = predict(model, eval_data, type="prob")[,2]
+  roc_obj = roc(response = eval_data$Bankrupt, levels=c("not_bankrupt", "is_bankrupt"), predictor=eval_pred)
+  print(
+    ggroc(roc_obj, legacy.axes = TRUE) + labs(x = 'Specificity', y = 'Sensitivity', title = paste0(model_name, ' Model ROC curve'))
+  )
+ print(paste0("AUC is ", auc(roc_obj)))
+}
+```
+
+Now train the same model on the balanced training set.
+
+```{r}
+
+# Train the random forest model on the training data
+train.fit.rf <- fit_ranger(train.data)
+# Train the random forest model on the balanced training data
+train_bal.fit.rf <- fit_ranger_on_balanced(train_bal.data)
+# Feature selected versions
+train.feat_sel.fit.rf <- fit_ranger(train.feat_sel.data, feat_sel = TRUE)
+train_bal.feat_sel.fit.rf <- fit_ranger_on_balanced(train_bal.feat_sel.data, feat_sel = TRUE)
+```
+
+```{r}
+
+get_test_set = function(feat_sel) {
+  if (feat_sel) {
+    return (test.feat_sel.data)
+  }
+  else {
+    return (test.data)
+  }
 }
 
-evaluate_model(rebalanced.fit.rf, test.data)
-evaluate_model(adasyn.fit.rf, test.data)
+apply_eval_pipeline = function(model, feat_sel=FALSE, model_name="Unknown") {
+  eval_data= get_test_set(feat_sel)
+  print(paste0("-- ", model_name))
+  # evaluate_model(model, eval_data)
+  evaluate_roc(model, eval_data, model_name)
+}
+```
+
+```{r}
+
+apply_eval_pipeline(train.fit.rf, model_name = "T RF")
+apply_eval_pipeline(train_bal.fit.rf, model_name = "TB RF")
+apply_eval_pipeline(train.feat_sel.fit.rf, feat_sel = TRUE, model_name = "TF RF")
+apply_eval_pipeline(train_bal.feat_sel.fit.rf, feat_sel = TRUE, model_name = "TBF RF")
+```
+
+Don't run the below cell
+
+```{r}
+
+# Define task and learner
+task <- makeClassifTask(id = "bankruptcy",
+                        data = adasyn.train.data,
+                        target = "y")
+
+learner <- makeLearner("classif.ranger", num.threads = 7)
+
+# Choose resampling strategy and define grid
+rdesc <- makeResampleDesc("CV", iters = 5)
+
+ps <- makeParamSet(makeDiscreteParam("mtry", c(3, 12, 29, 47, 73, 94)), 
+                   makeDiscreteParam("min.node.size", c(1, 3, 5)), 
+                   makeDiscreteParam("splitrule", c("gini", "extratrees", "hellinger")), 
+                   makeDiscreteParam("num.trees", c(30, 40, 50, 60, 70)), 
+                   makeDiscreteParam("max.depth", c(1, 3, 5, 7, 11))
+)
+
+# Tune
+res = tuneParams(learner, task, rdesc, par.set = ps,
+           control = makeTuneControlGrid())
+
+# Train on entire dataset (using best hyperparameters)
+lrn = setHyperPars(makeLearner("classif.ranger"), par.vals = res$x)
+m = train(lrn, task)
 
 ```
+
+```{r}
+
+xgbmGrid <-  expand.grid(max_depth = c(3, 6, 9), 
+                        # default values below
+                        nrounds = 100,    # number of trees
+                        eta = 0.3,
+                        gamma = c(5, 15),
+                        subsample = 0.65, 
+                        colsample_bytree = 0.7, 
+                        min_child_weight = c(1, 3)
+                        )
+
+# training a XGboost Regression tree model while tuning parameters
+fit_xgbm = function(data) {
+  return (
+    train(
+      x=data[, names(data) != 'Bankrupt'], 
+      y=data[["Bankrupt"]], 
+      method = "xgbTree", metric="ROC", 
+      trControl = cv5foldCtrl, tuneGrid = xgbmGrid, 
+      scale_pos_weight=get_bankrupt_weight(data)
+    )
+  )
+}
+
+fit_xgbm_on_balanced = function(data) {
+  return (
+    train(
+      x=data[, names(data) != 'Bankrupt'], 
+      y=data[["Bankrupt"]], 
+      method = "xgbTree", metric="ROC", 
+      trControl = cv5foldCtrl, tuneGrid = xgbmGrid
+    )
+  )
+}
+```
+
+```{r}
+train.fit.xgbm = fit_xgbm(train.data)
+train_bal.fit.xgbm = fit_xgbm_on_balanced(train_bal.data)
+train.feat_sel.fit.xgbm = fit_xgbm(train.feat_sel.data)
+train_bal.feat_sel.fit.xgbm = fit_xgbm_on_balanced(train_bal.feat_sel.data)
+```
+
+```{r}
+
+apply_eval_pipeline(train.fit.xgbm, model_name = "T XGBM")
+apply_eval_pipeline(train_bal.fit.xgbm, model_name = "TB XGBM")
+apply_eval_pipeline(train.feat_sel.fit.xgbm, feat_sel = TRUE, model_name = "TF XGBM")
+apply_eval_pipeline(train_bal.feat_sel.fit.xgbm, feat_sel = TRUE, model_name = "TBF XGBM")
+```
+
+```{r}
+
+adbGrid <-  expand.grid(
+                        mfinal= c(50, 100), 
+                        maxdepth= c(20, 30)
+                        )
+
+# training a XGboost Regression tree model while tuning parameters
+fit_adb = function(data) {
+  return (
+    train(
+      x=data[, names(data) != 'Bankrupt'], 
+      y=data[["Bankrupt"]], 
+      method = "AdaBag", metric="ROC", 
+      trControl = cv5foldCtrl, tuneGrid = adbGrid
+    )
+  )  
+}
+```
+
+```{r}
+
+train.fit.adb = fit_adb(train.data)
+train_bal.fit.adb = fit_adb(train_bal.data)
+train.feat_sel.fit.adb = fit_adb(train.feat_sel.data)
+train_bal.feat_sel.fit.adb = fit_adb(train_bal.feat_sel.data)
+```
+
+```{r}
+
+apply_eval_pipeline(train.fit.adb, model_name = "T ADB")
+apply_eval_pipeline(train_bal.fit.adb, model_name = "TB ADB")
+apply_eval_pipeline(train.feat_sel.fit.adb, feat_sel = TRUE, model_name = "TF ADB")
+apply_eval_pipeline(train_bal.feat_sel.fit.adb, feat_sel = TRUE, model_name = "TBF ADB")
+```
+
+```{r}
+
+baseCtrl <- trainControl(method="none", classProbs = TRUE, summaryFunction = twoClassSummary, allowParallel = TRUE)
+
+dwdPolyModel = train(
+  x=train_bal.data[, names(train_bal.data) != 'Bankrupt'], 
+  y=train_bal.data[["Bankrupt"]], 
+  method = "dwdPoly", 
+  trControl = baseCtrl, metric="ROC"
+)
+
+# summarising the results
+print(dwdPolyModel)
+```
+
+Report training performance of the two random forest models above.
+
+Report the test performance of the two random forest models above.
 
 Train and evaluate a ranger model as the alternative
 
 ```{r}
 
 #Compute weights to balance the RF
-# w <- 1/table(train.data$y)
-# w <- w/sum(w)
-# weights <- rep(0, nrow(train.data))
-# weights[train.data$y == 0] <- w['0']
-# weights[train.data$y == 1] <- w['1']
-# table(weights, train.data$y)
 
 #Fit the RF
 # train.df <- data.frame(train.data$Bankrupt., train.data[,2:ncol(train.data)])
@@ -216,14 +475,6 @@ evaluate_model(adasyn.fit.rrf, test.data)
 Attempt to increase weighting towards the +1 cases in training, on top of the balancing.
 
 ```{r}
-
-# Expects standardised column names: y, x1, x2, ...
-filter_features = function(data) {
-  return(
-    data %>%
-      select(y,x39,x45,x49,x50,x52,x56,x59,x63,x64,x65,x70,x74,x75,x80,x83,x84,x85,x89)
-  )
-}
 
 dr.adasyn.train.data <- filter_features(adasyn.train.data)
 
