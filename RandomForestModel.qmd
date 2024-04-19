@@ -167,6 +167,9 @@ get_bankrupt_class_weights = function (data) {
     c(1, get_bankrupt_weight(data))
   )
 }
+
+# Create 5 fold cv, sensitivity, specificity, ROC control
+cv5foldCtrl <- trainControl(method="cv", number=5, classProbs = TRUE, summaryFunction = twoClassSummary, allowParallel = TRUE) 
 ```
 
 Train a random forest model on caret. Employ 5 fold cross validation that optimises sensitivity.
@@ -175,9 +178,6 @@ Train a random forest model on caret. Employ 5 fold cross validation that optimi
 
 # num.trees = c(10, 30, 50), 
 # max.depth = c(5, 10, 15)
-
-# Create 5 fold cv, sensitivity, specificity, ROC control
-cv5foldCtrl <- trainControl(method="cv", number=5, classProbs = TRUE, summaryFunction = twoClassSummary, allowParallel = TRUE) 
 
 get_ranger_grid = function(feat_sel) {
   if (feat_sel) {
@@ -404,6 +404,18 @@ fit_adb = function(data) {
       x=data[, names(data) != 'Bankrupt'], 
       y=data[["Bankrupt"]], 
       method = "AdaBag", metric="ROC", 
+      trControl = cv5foldCtrl, tuneGrid = adbGrid, 
+      weights=get_sample_bankrupt_weights(data)
+    )
+  )  
+}
+
+fit_adb_on_balanced = function(data) {
+  return (
+    train(
+      x=data[, names(data) != 'Bankrupt'], 
+      y=data[["Bankrupt"]], 
+      method = "AdaBag", metric="ROC", 
       trControl = cv5foldCtrl, tuneGrid = adbGrid
     )
   )  
@@ -413,9 +425,9 @@ fit_adb = function(data) {
 ```{r}
 
 train.fit.adb = fit_adb(train.data)
-train_bal.fit.adb = fit_adb(train_bal.data)
+train_bal.fit.adb = fit_adb_on_balanced(train_bal.data)
 train.feat_sel.fit.adb = fit_adb(train.feat_sel.data)
-train_bal.feat_sel.fit.adb = fit_adb(train_bal.feat_sel.data)
+train_bal.feat_sel.fit.adb = fit_adb_on_balanced(train_bal.feat_sel.data)
 ```
 
 ```{r}
