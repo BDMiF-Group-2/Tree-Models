@@ -442,15 +442,19 @@ apply_eval_pipeline(train_bal.feat_sel.fit.adb, feat_sel = TRUE, model_name = "T
 
 baseCtrl <- trainControl(method="none", classProbs = TRUE, summaryFunction = twoClassSummary, allowParallel = TRUE)
 
-dwdPolyModel = train(
+gamModel = train(
   x=train_bal.data[, names(train_bal.data) != 'Bankrupt'], 
   y=train_bal.data[["Bankrupt"]], 
-  method = "dwdPoly", 
+  method = "rotationForest", 
   trControl = baseCtrl, metric="ROC"
 )
 
 # summarising the results
-print(dwdPolyModel)
+```
+
+```{r}
+
+apply_eval_pipeline(gamModel, model_name = "GAM")
 ```
 
 Report training performance of the two random forest models above.
