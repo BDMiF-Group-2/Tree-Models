@@ -361,7 +361,6 @@ m = train(lrn, task)
 ```{r}
 
 xgbmGrid <-  expand.grid(max_depth = c(3, 6, 9), 
-                        # default values below
                         nrounds = 100,    # number of trees
                         eta = 0.3,
                         gamma = c(5, 15),
@@ -370,7 +369,7 @@ xgbmGrid <-  expand.grid(max_depth = c(3, 6, 9),
                         min_child_weight = c(1, 3)
                         )
 
-# training a XGboost Regression tree model while tuning parameters
+# training a XGboost tree model while tuning parameters
 fit_xgbm = function(data) {
   return (
     train(
@@ -396,6 +395,9 @@ fit_xgbm_on_balanced = function(data) {
 ```
 
 ```{r}
+
+set.seed(0)
+
 train.fit.xgbm = fit_xgbm(train.data)
 train_bal.fit.xgbm = fit_xgbm_on_balanced(train_bal.data)
 train.feat_sel.fit.xgbm = fit_xgbm(train.feat_sel.data)
@@ -404,10 +406,10 @@ train_bal.feat_sel.fit.xgbm = fit_xgbm_on_balanced(train_bal.feat_sel.data)
 
 ```{r}
 
-apply_eval_pipeline(train.fit.xgbm, model_name = "T XGBM")
-apply_eval_pipeline(train_bal.fit.xgbm, model_name = "TB XGBM")
-apply_eval_pipeline(train.feat_sel.fit.xgbm, feat_sel = TRUE, model_name = "TF XGBM")
-apply_eval_pipeline(train_bal.feat_sel.fit.xgbm, feat_sel = TRUE, model_name = "TBF XGBM")
+apply_eval_pipeline(train.fit.xgbm, model_name = "XGBoost [Original Data]")
+apply_eval_pipeline(train_bal.fit.xgbm, model_name = "XGBoost [Balanced Data]")
+apply_eval_pipeline(train.feat_sel.fit.xgbm, feat_sel = TRUE, model_name = "XGBoost [Feature Selected Data]")
+apply_eval_pipeline(train_bal.feat_sel.fit.xgbm, feat_sel = TRUE, model_name = "XGBoost [Balanced & Feature Selected Data]")
 ```
 
 ```{r}
@@ -417,7 +419,7 @@ adbGrid <-  expand.grid(
                         maxdepth= c(20, 30)
                         )
 
-# training a XGboost Regression tree model while tuning parameters
+# training an AdaBoost tree model while tuning parameters
 fit_adb = function(data) {
   return (
     train(
@@ -444,6 +446,8 @@ fit_adb_on_balanced = function(data) {
 
 ```{r}
 
+set.seed(0)
+
 train.fit.adb = fit_adb(train.data)
 train_bal.fit.adb = fit_adb_on_balanced(train_bal.data)
 train.feat_sel.fit.adb = fit_adb(train.feat_sel.data)
@@ -452,10 +456,10 @@ train_bal.feat_sel.fit.adb = fit_adb_on_balanced(train_bal.feat_sel.data)
 
 ```{r}
 
-apply_eval_pipeline(train.fit.adb, model_name = "T ADB")
-apply_eval_pipeline(train_bal.fit.adb, model_name = "TB ADB")
-apply_eval_pipeline(train.feat_sel.fit.adb, feat_sel = TRUE, model_name = "TF ADB")
-apply_eval_pipeline(train_bal.feat_sel.fit.adb, feat_sel = TRUE, model_name = "TBF ADB")
+apply_eval_pipeline(train.fit.adb, model_name = "AdaBoost [Original Data]")
+apply_eval_pipeline(train_bal.fit.adb, model_name = "AdaBoost [Balanced Data]")
+apply_eval_pipeline(train.feat_sel.fit.adb, feat_sel = TRUE, model_name = "AdaBoost [Feature Selected Data]")
+apply_eval_pipeline(train_bal.feat_sel.fit.adb, feat_sel = TRUE, model_name = "AdaBoost [Balanced & Feature Selected Data]")
 ```
 
 ```{r}
