@@ -5,7 +5,7 @@ format: html
 editor: visual
 ---
 
-## Random Forest Model
+## Tree Models
 
 This document includes a random forest implementation on the re-balanced training data. Then, it tests its performance on the original test data.
 
