@@ -232,8 +232,7 @@ Now evaluate the model on the test data with its confusion matrix
 ```{r}
 # Performance on reserved test data
 
-# Expects standardised column names.
-evaluate_model = function(model, eval_data) {
+evaluate_conf_mat = function(model, eval_data) {
   # Make predictons
   eval_pred = NULL
   
@@ -245,10 +244,20 @@ evaluate_model = function(model, eval_data) {
   else {
     eval_pred = predict(model, newdata=eval_data)  
   }
-  # write.csv(eval_pred, "predictionsModel.csv")
   
   # Report performance with metrics and the confusion matrix
-  print(postResample(pred=eval_pred, obs=eval_data$Bankrupt))
+  print(confusionMatrix(eval_pred, eval_data$Bankrupt))
+}
+```
+
+```{r}
+
+evaluate_roc_best_conf_mat = function(model, eval_data, prob_thres) {
+
+  eval_pred = as.factor(predict(model, eval_data, type="prob")[,2] > prob_thres)
+  levels(eval_pred) = c("not_bankrupt", "is_bankrupt")
+  
+  # Output the confusion matrix
   print(confusionMatrix(eval_pred, eval_data$Bankrupt))
 }
 ```
@@ -256,14 +265,20 @@ evaluate_model = function(model, eval_data) {
 Also evaluate it based on its ROC and AUC.
 
 ```{r}
-
-evaluate_roc = function(model, eval_data, model_name="Unknown") {
+create_roc = function(model, eval_data) {
   eval_pred = predict(model, eval_data, type="prob")[,2]
   roc_obj = roc(response = eval_data$Bankrupt, levels=c("not_bankrupt", "is_bankrupt"), predictor=eval_pred)
+  
+  return(roc_obj)
+}
+```
+
+```{r}
+
+evaluate_roc = function(roc_obj, model_name="Unknown") {
   print(
-    ggroc(roc_obj, legacy.axes = TRUE) + labs(x = 'Specificity', y = 'Sensitivity', title = paste0(model_name, ' Model ROC curve'))
+    ggroc(roc_obj, legacy.axes = TRUE) + labs(x = 'Specificity', y = 'Sensitivity', title = paste0(model_name, ' ROC Curve.\n AUC: ', auc(roc_obj)))
   )
- print(paste0("AUC is ", auc(roc_obj)))
 }
 ```
 
@@ -271,6 +286,7 @@ Now train the same model on the balanced training set.
 
 ```{r}
 
+set.seed(0)
 # Train the random forest model on the training data
 train.fit.rf <- fit_ranger(train.data)
 # Train the random forest model on the balanced training data
@@ -292,19 +308,23 @@ get_test_set = function(feat_sel) {
 }
 
 apply_eval_pipeline = function(model, feat_sel=FALSE, model_name="Unknown") {
-  eval_data= get_test_set(feat_sel)
-  print(paste0("-- ", model_name))
-  # evaluate_model(model, eval_data)
-  evaluate_roc(model, eval_data, model_name)
+  eval_data = get_test_set(feat_sel)
+  roc_obj = create_roc(model, eval_data)
+  roc_best_prob_thres = coords(roc_obj, "best", ret = "threshold")[1, 1]
+  
+  print(paste0("-- ", model_name, " --"))
+  evaluate_roc_best_conf_mat(model, eval_data, roc_best_prob_thres)
+  
+  evaluate_roc(roc_obj, model_name)
 }
 ```
 
 ```{r}
 
-apply_eval_pipeline(train.fit.rf, model_name = "T RF")
-apply_eval_pipeline(train_bal.fit.rf, model_name = "TB RF")
-apply_eval_pipeline(train.feat_sel.fit.rf, feat_sel = TRUE, model_name = "TF RF")
-apply_eval_pipeline(train_bal.feat_sel.fit.rf, feat_sel = TRUE, model_name = "TBF RF")
+apply_eval_pipeline(train.fit.rf, model_name = "Random Forest [Original Data]")
+apply_eval_pipeline(train_bal.fit.rf, model_name = "Random Forest [Balanced Data]")
+apply_eval_pipeline(train.feat_sel.fit.rf, feat_sel = TRUE, model_name = "Random Forest [Feature Selected Data]")
+apply_eval_pipeline(train_bal.feat_sel.fit.rf, feat_sel = TRUE, model_name = "Random Forest [Balanced & Feature Selected Data]")
 ```
 
 Don't run the below cell
