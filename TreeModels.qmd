@@ -1,23 +1,24 @@
 ---
-title: "Random Forest Model"
+title: "Tree Models"
 author: "Varun Vipul Chodanker"
 format: html
 editor: visual
 ---
 
-## Tree Models
+# Tree Models
 
-This document includes a random forest implementation on the re-balanced training data. Then, it tests its performance on the original test data.
+This notebook implements random forests, XGBoost and AdaBoost to solve the bankruptcy classification task. There are 4 versions of the training data which each of the models are trained on. These are the original version, the balanced version, the feature selected version and the balanced & feature selected version.
 
 ## Setup
 
-First, clear the environment, set configuration parameters and load the required libraries.
+First, we clear the environment, load the required libraries and set the configuration parameters.
 
 ```{r}
 
 # Reset environment
 rm(list=ls())
 
+# Load required libraries
 library(caret)
 library(readxl)
 library(ranger)
@@ -26,20 +27,19 @@ library(mlr3)
 library(pROC)
 library(doMC)
 
-# Configure the parallel backend to: #cores - 1
+# Register the parallel backend to use 7 cores (out of 8)
 registerDoMC(7)
 ```
 
-## Data Loading and Preparation
+## Datasets
 
-Load the re-balanced training and original test datasets. Then, prepare them accordingly.
+Each version of the training data, the original test data and the feature selected test data are loaded and prepared for the classification task.
 
-First define utility functions for data description, column name standardisation and target type preparation.
+Utility functions are defined below.
 
 ```{r}
 
-# Utility functions
-
+# Prints outline of the given dataset
 desc_bkrpt_data = function(data, name) {
   print("--- Bankruptcy Dataset")
   print(sprintf("Name: %s", name))
@@ -54,7 +54,7 @@ desc_bkrpt_data = function(data, name) {
   print("---")
 }
 
-# Standardises column names assuming the target is first, then the features
+# Standardises column names assuming the target is first, and then the features follow
 standardise_column_names = function(data) {
   # Target
   names(data)[1] = "y"
@@ -71,19 +71,15 @@ prep_class_targ = function(data) {
   return(data)
 }
 
-# Filter to passed in column names...
+# Filters the given dataset to the given column names
 filter_features = function(data, colnames) {
   return(
     data %>%
       select(all_of(colnames))
   )
 }
-```
 
-Read wrapper for a dataframe
-
-```{r}
-
+# Reads an excel file to a dataframe
 read_xlsx_to_df = function(fp) {
   return(
     data.frame(read_excel(fp))
@@ -91,7 +87,7 @@ read_xlsx_to_df = function(fp) {
 }
 ```
 
-Load all the variants of the training data and the test data in.
+All the datasets are loaded in.
 
 ```{r}
 
@@ -101,7 +97,7 @@ train.data = read_xlsx_to_df("./Datasets/train.xlsx")
 train_bal.data = read_xlsx_to_df("./Datasets/train_bal.xlsx")
 # Load the feature selected training data in
 train.feat_sel.data = read_xlsx_to_df("./Datasets/train_feat_sel.xlsx")
-# Load the feature selected balanced training data in
+# Load the balanced & feature selected training data in
 train_bal.feat_sel.data = read_xlsx_to_df("./Datasets/train_bal_feat_sel.xlsx")
 
 # Load the test data in
@@ -110,37 +106,39 @@ test.data = read_xlsx_to_df("./Datasets/test.xlsx")
 test.feat_sel.data = filter_features(test.data, names(train.feat_sel.data))
 ```
 
-Inspect the loaded data sets here.
+Verify this.
 
 ```{r}
 
 str(train.data)
 ```
 
-Convert the target of the data sets to ensure use for classification.
+The targets from all the datasets are converted (to categorical) so that they are compatible with classification.
 
 ```{r}
 
-# Target conversion for classification
+# Training datasets...
 train.data = prep_class_targ(train.data)
 train_bal.data = prep_class_targ(train_bal.data)
 train.feat_sel.data = prep_class_targ(train.feat_sel.data)
 train_bal.feat_sel.data = prep_class_targ(train_bal.feat_sel.data)
-
+# Test datasets...
 test.data = prep_class_targ(test.data)
 test.feat_sel.data = prep_class_targ(test.feat_sel.data)
 ```
 
-Confirm the data sets are ready here.
+Verify this.
 
 ```{r}
 
 desc_bkrpt_data(train.data, "Train")
 ```
 
-## Model Training and Evaluation
+## Models
 
-Create utility function related to the weight/weights of the minority bankrupt class.
+The utility functions related to training and evaluation are defined first. Then, the models are implemented using them.
+
+Utilities related to training. Including those for the weighting of the minority bankrupt class. Notably, the training control selects 5 fold cross validation and ROC metrics.
 
 ```{r}
 
@@ -151,6 +149,7 @@ get_bankrupt_weight = function (data) {
   )
 }
 
+# weights for each observation based on their class
 get_sample_bankrupt_weights = function (data) {
   ws = rep(0, nrow(data))
   not_bankrupt_weight = 1
@@ -162,76 +161,61 @@ get_sample_bankrupt_weights = function (data) {
   return(ws)
 }
 
+# weights for each of the two classes -> to enable cost sensitive learning
 get_bankrupt_class_weights = function (data) {
   return (
     c(1, get_bankrupt_weight(data))
   )
 }
 
-# Create 5 fold cv, sensitivity, specificity, ROC control
-cv5foldCtrl <- trainControl(method="cv", number=5, classProbs = TRUE, summaryFunction = twoClassSummary, allowParallel = TRUE) 
-```
-
-Train a random forest model on caret. Employ 5 fold cross validation that optimises sensitivity.
-
-```{r}
-
-# num.trees = c(10, 30, 50), 
-# max.depth = c(5, 10, 15)
-
-get_ranger_grid = function(feat_sel) {
-  if (feat_sel) {
-    return (
-      expand.grid(mtry = c(3, 12, 29, 51),
-           min.node.size=c(1, 3, 5, 7, 9),
-           splitrule=c("gini", "extratrees", "hellinger")
-      )
+# Extract the best instance of a model out of a list of many that correspond to different hyperparamter configurations
+extract_roc_best_model = function(models) {
+  roc_best_idx = which.max( 
+    lapply(
+      models, 
+      (function (candidate) max(candidate$results$ROC)) # based on max ROC
     )
-  }
-  else {
-    return (
-      expand.grid(mtry = c(3, 12, 29, 47, 73, 91),
-           min.node.size=c(1, 3, 5, 7, 9),
-           splitrule=c("gini", "extratrees", "hellinger")
-      )
-    )
-  }
-}
-
-fit_ranger = function(data, feat_sel=FALSE) {
-  rangerGrid = get_ranger_grid(feat_sel)
+  )
   
-  return (
-    train(
-      x=data[, names(data) != 'Bankrupt'], 
-      y=data[["Bankrupt"]], method="ranger", 
-      metric="ROC", trControl=cv5foldCtrl, tuneGrid=rangerGrid, 
-      num.trees=50, max.depth=3, regularization.usedepth = TRUE, 
-      weights=get_sample_bankrupt_weights(data), class.weights=get_bankrupt_class_weights(data)
-    )
+  print(paste0("Best Conf: ", names(models)[roc_best_idx]))
+  return(
+    models[[
+      roc_best_idx
+    ]]  
   )
 }
 
-# assumes balanced data input
-fit_ranger_on_balanced = function(data, feat_sel=FALSE) {
-  rangerGrid = get_ranger_grid(feat_sel)
+# Training control for 5 fold cross validation and the sensitivity, specificity and ROC metrics
+cv5foldCtrl <- trainControl(method="cv", number=5, classProbs = TRUE, summaryFunction = twoClassSummary, allowParallel = TRUE)
+```
+
+ROC evaluation utilities.
+
+```{r}
+
+# Creates the ROC from varying probability thresholds on the (+ve) class probability predictions
+create_roc = function(model, eval_data) {
+  # (+ve) class probability predictions
+  eval_pred = predict(model, eval_data, type="prob")[,2]
+  # create ROC of varying sensitivity-specificity trade-offs by varying the threshold
+  roc_obj = roc(response = eval_data$Bankrupt, levels=c("not_bankrupt", "is_bankrupt"), predictor=eval_pred)
   
-  return (
-    train(
-      x=data[, names(data) != 'Bankrupt'], 
-      y=data[["Bankrupt"]], method="ranger", 
-      metric="ROC", trControl=cv5foldCtrl, tuneGrid=rangerGrid, 
-      num.trees=50, max.depth=3, regularization.usedepth = TRUE
-    )
+  return(roc_obj)
+}
+
+# Plot the ROC with the calculated AUC in the title
+evaluate_roc = function(roc_obj, model_name="Unknown") {
+  print(
+    ggroc(roc_obj, legacy.axes = TRUE) + labs(title = paste0(model_name, ' ROC Curve.\n AUC: ', auc(roc_obj)), x = 'Specificity', y = 'Sensitivity')
   )
 }
 ```
 
-Now evaluate the model on the test data with its confusion matrix
+Confusion matrix evaluation utilities.
 
 ```{r}
-# Performance on reserved test data
 
+# Confusion matrix of the model based on the default threshold
 evaluate_conf_mat = function(model, eval_data) {
   # Make predictons
   eval_pred = NULL
@@ -248,56 +232,23 @@ evaluate_conf_mat = function(model, eval_data) {
   # Report performance with metrics and the confusion matrix
   print(confusionMatrix(eval_pred, eval_data$Bankrupt))
 }
-```
 
-```{r}
-
+# Confusion matrix of the model based on the ROC optimal threshold
 evaluate_roc_best_conf_mat = function(model, eval_data, prob_thres) {
-
+  # Make predictions from the given ROC optimal threshold
   eval_pred = as.factor(predict(model, eval_data, type="prob")[,2] > prob_thres)
   levels(eval_pred) = c("not_bankrupt", "is_bankrupt")
   
-  # Output the confusion matrix
+  # Output the confusion matrix of these predictions
   print(confusionMatrix(eval_pred, eval_data$Bankrupt))
 }
 ```
 
-Also evaluate it based on its ROC and AUC.
-
-```{r}
-create_roc = function(model, eval_data) {
-  eval_pred = predict(model, eval_data, type="prob")[,2]
-  roc_obj = roc(response = eval_data$Bankrupt, levels=c("not_bankrupt", "is_bankrupt"), predictor=eval_pred)
-  
-  return(roc_obj)
-}
-```
+Utilities for the overall evaluation pipeline.
 
 ```{r}
 
-evaluate_roc = function(roc_obj, model_name="Unknown") {
-  print(
-    ggroc(roc_obj, legacy.axes = TRUE) + labs(x = 'Specificity', y = 'Sensitivity', title = paste0(model_name, ' ROC Curve.\n AUC: ', auc(roc_obj)))
-  )
-}
-```
-
-Now train the same model on the balanced training set.
-
-```{r}
-
-set.seed(0)
-# Train the random forest model on the training data
-train.fit.rf <- fit_ranger(train.data)
-# Train the random forest model on the balanced training data
-train_bal.fit.rf <- fit_ranger_on_balanced(train_bal.data)
-# Feature selected versions
-train.feat_sel.fit.rf <- fit_ranger(train.feat_sel.data, feat_sel = TRUE)
-train_bal.feat_sel.fit.rf <- fit_ranger_on_balanced(train_bal.feat_sel.data, feat_sel = TRUE)
-```
-
-```{r}
-
+# Retrieves the appropriate test set based on where feature selection is in effect
 get_test_set = function(feat_sel) {
   if (feat_sel) {
     return (test.feat_sel.data)
@@ -307,17 +258,98 @@ get_test_set = function(feat_sel) {
   }
 }
 
+# Full evaluation pipeline
 apply_eval_pipeline = function(model, feat_sel=FALSE, model_name="Unknown") {
-  eval_data = get_test_set(feat_sel)
+  # Appropriate test set based on feature selection
+  eval_data = get_test_set(feat_sel) 
+  # Create ROC
   roc_obj = create_roc(model, eval_data)
+  # ROC optimised probability threshold (best sensitivity-specificity trade-off)
   roc_best_prob_thres = coords(roc_obj, "best", ret = "threshold")[1, 1]
   
-  print(paste0("-- ", model_name, " --"))
-  evaluate_roc_best_conf_mat(model, eval_data, roc_best_prob_thres)
-  
-  evaluate_roc(roc_obj, model_name)
+  # Outputs
+  print(paste0("-- ", model_name, " --")) # Id
+  # Confusion matrix from the ROC optimal threshold
+  evaluate_roc_best_conf_mat(model, eval_data, roc_best_prob_thres) 
+  evaluate_roc(roc_obj, model_name) # ROC curve + AUC
 }
 ```
+
+### Random Forest
+
+Random forest (`ranger` through `caret`) setup for each scenario of training data. Hyper-parameter tuning optimises the ROC metric.
+
+```{r}
+
+# Hyperparameter tuning grid varies based on whether feature selection is in effect.
+get_ranger_grid = function(feat_sel) {
+  if (feat_sel) {
+    # If it is, there are only 51 features that we can randomly select from (w.r.t mtry)
+    return (
+      expand.grid(mtry = c(3, 12, 29, 51),
+           min.node.size=c(1, 3, 5, 7, 9),
+           splitrule=c("gini", "extratrees", "hellinger")
+      )
+    )
+  }
+  else {
+    # Otherwise, there are at most 91 features
+    return (
+      expand.grid(mtry = c(3, 12, 29, 47, 73, 91),
+           min.node.size=c(1, 3, 5, 7, 9),
+           splitrule=c("gini", "extratrees", "hellinger")
+      )
+    )
+  }
+}
+
+# Setup for imbalanced datasets - appropriate for the non-balanced training data versions
+fit_ranger = function(data, feat_sel=FALSE) {
+  rangerGrid = get_ranger_grid(feat_sel)
+  
+  return (
+    train(
+      x=data[, names(data) != 'Bankrupt'], 
+      y=data[["Bankrupt"]], method="ranger", 
+      metric="ROC", trControl=cv5foldCtrl, tuneGrid=rangerGrid, 
+      num.trees=50, max.depth=3, regularization.usedepth = TRUE, 
+      weights=get_sample_bankrupt_weights(data), class.weights=get_bankrupt_class_weights(data)
+    )
+    # Weights for sampling + cost-sensitive learning => combat the imbalance
+  )
+}
+
+# Setup for balanced datasets
+fit_ranger_on_balanced = function(data, feat_sel=FALSE) {
+  rangerGrid = get_ranger_grid(feat_sel)
+  
+  return (
+    train(
+      x=data[, names(data) != 'Bankrupt'], 
+      y=data[["Bankrupt"]], method="ranger", 
+      metric="ROC", trControl=cv5foldCtrl, tuneGrid=rangerGrid, 
+      num.trees=50, max.depth=3, regularization.usedepth = TRUE
+    )
+  )
+}
+```
+
+Train on each data version.
+
+```{r}
+
+set.seed(0)
+# Train the random forest model on the training data
+train.fit.rf <- fit_ranger(train.data)
+# Train the random forest model on the balanced training data
+train_bal.fit.rf <- fit_ranger_on_balanced(train_bal.data)
+# Train the random forest model on the feature selected training data
+train.feat_sel.fit.rf <- fit_ranger(train.feat_sel.data, feat_sel = TRUE)
+# Train the random forest model on the balanced & feature selected training data
+train_bal.feat_sel.fit.rf <- fit_ranger_on_balanced(train_bal.feat_sel.data, feat_sel = TRUE)
+```
+
+Evaluate each of the fits.
 
 ```{r}
 
@@ -327,41 +359,15 @@ apply_eval_pipeline(train.feat_sel.fit.rf, feat_sel = TRUE, model_name = "Random
 apply_eval_pipeline(train_bal.feat_sel.fit.rf, feat_sel = TRUE, model_name = "Random Forest [Balanced & Feature Selected Data]")
 ```
 
-Don't run the below cell
+### XGBoost
+
+XGBoost (`xgbTree` through `caret`) setup for each scenario of training data. Hyper-parameter tuning optimises the ROC metric.
 
 ```{r}
 
-# Define task and learner
-task <- makeClassifTask(id = "bankruptcy",
-                        data = adasyn.train.data,
-                        target = "y")
-
-learner <- makeLearner("classif.ranger", num.threads = 7)
-
-# Choose resampling strategy and define grid
-rdesc <- makeResampleDesc("CV", iters = 5)
-
-ps <- makeParamSet(makeDiscreteParam("mtry", c(3, 12, 29, 47, 73, 94)), 
-                   makeDiscreteParam("min.node.size", c(1, 3, 5)), 
-                   makeDiscreteParam("splitrule", c("gini", "extratrees", "hellinger")), 
-                   makeDiscreteParam("num.trees", c(30, 40, 50, 60, 70)), 
-                   makeDiscreteParam("max.depth", c(1, 3, 5, 7, 11))
-)
-
-# Tune
-res = tuneParams(learner, task, rdesc, par.set = ps,
-           control = makeTuneControlGrid())
-
-# Train on entire dataset (using best hyperparameters)
-lrn = setHyperPars(makeLearner("classif.ranger"), par.vals = res$x)
-m = train(lrn, task)
-
-```
-
-```{r}
-
+# Hyperparameter tuning grid
 xgbmGrid <-  expand.grid(max_depth = c(3, 6, 9), 
-                        nrounds = 100,    # number of trees
+                        nrounds = 100, # number of trees
                         eta = 0.3,
                         gamma = c(5, 15),
                         subsample = 0.65, 
@@ -369,7 +375,7 @@ xgbmGrid <-  expand.grid(max_depth = c(3, 6, 9),
                         min_child_weight = c(1, 3)
                         )
 
-# training a XGboost tree model while tuning parameters
+# Setup for imbalanced datasets - appropriate for the non-balanced training data versions
 fit_xgbm = function(data) {
   return (
     train(
@@ -378,10 +384,12 @@ fit_xgbm = function(data) {
       method = "xgbTree", metric="ROC", 
       trControl = cv5foldCtrl, tuneGrid = xgbmGrid, 
       scale_pos_weight=get_bankrupt_weight(data)
+      # weight the minority +ve class => combat the class imbalance
     )
   )
 }
 
+# Setup for balanced datasets
 fit_xgbm_on_balanced = function(data) {
   return (
     train(
@@ -394,6 +402,8 @@ fit_xgbm_on_balanced = function(data) {
 }
 ```
 
+Train on each data version.
+
 ```{r}
 
 set.seed(0)
@@ -404,6 +414,8 @@ train.feat_sel.fit.xgbm = fit_xgbm(train.feat_sel.data)
 train_bal.feat_sel.fit.xgbm = fit_xgbm_on_balanced(train_bal.feat_sel.data)
 ```
 
+Evaluate each of the fits.
+
 ```{r}
 
 apply_eval_pipeline(train.fit.xgbm, model_name = "XGBoost [Original Data]")
@@ -412,14 +424,19 @@ apply_eval_pipeline(train.feat_sel.fit.xgbm, feat_sel = TRUE, model_name = "XGBo
 apply_eval_pipeline(train_bal.feat_sel.fit.xgbm, feat_sel = TRUE, model_name = "XGBoost [Balanced & Feature Selected Data]")
 ```
 
+### AdaBoost
+
+AdaBoost (`AdaBag` through `caret`) setup for each scenario of training data. Hyper-parameter tuning optimises the ROC metric.
+
 ```{r}
 
+# Hyperparameter tuning grid
 adbGrid <-  expand.grid(
                         mfinal= c(50, 100), 
                         maxdepth= c(20, 30)
                         )
 
-# training an AdaBoost tree model while tuning parameters
+# Setup for imbalanced datasets - appropriate for the non-balanced training data versions
 fit_adb = function(data) {
   return (
     train(
@@ -428,10 +445,12 @@ fit_adb = function(data) {
       method = "AdaBag", metric="ROC", 
       trControl = cv5foldCtrl, tuneGrid = adbGrid, 
       weights=get_sample_bankrupt_weights(data)
+      # sample weights => combat the class imbalance
     )
   )  
 }
 
+# Setup for balanced datasets
 fit_adb_on_balanced = function(data) {
   return (
     train(
@@ -444,6 +463,8 @@ fit_adb_on_balanced = function(data) {
 }
 ```
 
+Train on each data version.
+
 ```{r}
 
 set.seed(0)
@@ -454,6 +475,8 @@ train.feat_sel.fit.adb = fit_adb(train.feat_sel.data)
 train_bal.feat_sel.fit.adb = fit_adb_on_balanced(train_bal.feat_sel.data)
 ```
 
+Evaluate each of the fits.
+
 ```{r}
 
 apply_eval_pipeline(train.fit.adb, model_name = "AdaBoost [Original Data]")
@@ -462,102 +485,37 @@ apply_eval_pipeline(train.feat_sel.fit.adb, feat_sel = TRUE, model_name = "AdaBo
 apply_eval_pipeline(train_bal.feat_sel.fit.adb, feat_sel = TRUE, model_name = "AdaBoost [Balanced & Feature Selected Data]")
 ```
 
+### Other (Experimentation)
+
+Rotation Forests
+
 ```{r}
 
-baseCtrl <- trainControl(method="none", classProbs = TRUE, summaryFunction = twoClassSummary, allowParallel = TRUE)
+# Rotation Forests
 
-gamModel = train(
+rotfGrid = expand.grid(
+  K = c(30, 91), # number of variables subsets
+  L = c(50, 100) # number of trees
+)
+
+rotfs <- list()
+for (maxdepth in c(3, 9)) {
+  current_rotf = train(
   x=train_bal.data[, names(train_bal.data) != 'Bankrupt'], 
   y=train_bal.data[["Bankrupt"]], 
   method = "rotationForest", 
-  trControl = baseCtrl, metric="ROC"
-)
-
-# summarising the results
-```
-
-```{r}
-
-apply_eval_pipeline(gamModel, model_name = "GAM")
-```
-
-Report training performance of the two random forest models above.
-
-Report the test performance of the two random forest models above.
-
-Train and evaluate a ranger model as the alternative
-
-```{r}
-
-#Compute weights to balance the RF
-
-#Fit the RF
-# train.df <- data.frame(train.data$Bankrupt., train.data[,2:ncol(train.data)])
-# case.weights=weights
-rebalanced.fit.rrf <- ranger(y~., rebalanced.train.data)
-print(rebalanced.fit.rrf)
-evaluate_model(rebalanced.fit.rrf, test.data)
-# test.pred = predict(rebalanced.fit.rrf, data=test.data)
-# postResample(pred=test.pred$predictions, obs=test.data$y)
-# confusionMatrix(test.pred$predictions, test.data$y)
-```
-
-```{r}
-
-adasyn.fit.rrf <- ranger(y~., adasyn.train.data)
-print(adasyn.fit.rrf)
-evaluate_model(adasyn.fit.rrf, test.data)
-# test.pred = predict(adasyn.fit.rrf, data=test.data)
-# postResample(pred=test.pred$predictions, obs=test.data$y)
-# confusionMatrix(test.pred$predictions, test.data$y)
-```
-
-Attempt to increase weighting towards the +1 cases in training, on top of the balancing.
-
-```{r}
-
-dr.adasyn.train.data <- filter_features(adasyn.train.data)
-
-str(dr.adasyn.train.data)
-```
-
-```{r}
-
-get_case_weights = function(data) {
-  weights <- rep(0, nrow(data))
-  weights[data$y == 0] = 0.03
-  weights[data$y == 1] = 0.97
-  print("Weight Assignment:")
-  table(weights, data$y)
-  
-  return(
-    weights
+  trControl = cv5foldCtrl, tuneGrid = rotfGrid, metric="ROC", 
+  minsplit = 1, maxdepth = maxdepth
   )
+  
+  rotfs[[paste0(maxdepth, "d")]] = current_rotf
 }
 
-get_class_weights = function() {
-  return(c(0, 5000000))
-}
+train_bal.fit.rotf = extract_roc_best_model(rotfs)
+print(train_bal.fit.rotf)
 ```
 
 ```{r}
 
-adasyn.fit.wrrf <- ranger(
-  y~., adasyn.train.data, 
-  case.weights=get_case_weights(adasyn.train.data), class.weights = get_class_weights()
-)
-print(adasyn.fit.wrrf)
-evaluate_model(adasyn.fit.wrrf, test.data)
-```
-
-```{r}
-
-adasyn.fit.csrf = csrf(y~., adasyn.train.data, test.data)
-print(adasyn.fit.csrf)
-```
-
-```{r}
-
-# worse performance (case-weighted random forests)
-confusionMatrix(adasyn.fit.csrf, test.data$y)
+apply_eval_pipeline(train_bal.fit.rotf, model_name = "Rotation Forest [Balanced Data]")
 ```
