@@ -519,3 +519,12 @@ print(train_bal.fit.rotf)
 
 apply_eval_pipeline(train_bal.fit.rotf, model_name = "Rotation Forest [Balanced Data]")
 ```
+
+## Variable Importance
+
+The application of decision trees naturally forms variable importance measures based on the appearances in the splitting rules. Thus, we extract variable importances from one of our decision tree models - in this case the XGBoost model that was trained on the balanced dataset.
+
+```{r}
+
+varImp(train_bal.fit.xgbm)
+```
